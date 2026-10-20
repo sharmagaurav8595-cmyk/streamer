@@ -1,0 +1,73 @@
+
+name: YouTube Direct Live Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: "Public YouTube video URL"
+        required: true
+        type: string
+
+jobs:
+  stream:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Install streaming tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install --user -U yt-dlp
+
+      - name: Validate source URL
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
+        run: |
+          python - <<'PY'
+          import os
+          from urllib.parse import urlparse
+          u = urlparse(os.environ["VIDEO_URL"])
+          allowed = {"youtube.com", "www.youtube.com",
+                     "m.youtube.com", "youtu.be"}
+          if u.scheme != "https" or u.hostname not in allowed:
+              raise SystemExit("Invalid YouTube URL")
+          PY
+
+      - name: Stream to YouTube
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
+          STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        shell: bash
+        run: |
+          set -o pipefail
+          test -n "$STREAM_KEY"
+
+          set +e
+          timeout --signal=INT 300 bash -c '
+            set -o pipefail
+
+            "$HOME/.local/bin/yt-dlp" \
+              --no-playlist \
+              -f "best[ext=mp4][acodec!=none]/best" \
+              -o - "$VIDEO_URL" |
+            ffmpeg -hide_banner -nostdin -re \
+              -i pipe:0 \
+              -map 0:v:0 -map 0:a:0 \
+              -c:v libx264 -preset veryfast \
+              -pix_fmt yuv420p \
+              -r 30 -g 60 \
+              -b:v 2500k -maxrate 2500k \
+              -bufsize 5000k \
+              -c:a aac -b:a 128k \
+              -ar 44100 \
+              -f flv \
+              "rtmps://a.rtmps.youtube.com/live2/$STREAM_KEY"
+          '
+          code=$?
+          if [ "$code" -eq 124 ]; then
+            echo "Five-minute test completed."
+            exit 0
+          fi
+          exit "$code"
