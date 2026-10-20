@@ -15,11 +15,21 @@ jobs:
     timeout-minutes: 12
 
     steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install streaming tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-          python -m pip install --user -U yt-dlp
+          python -m pip install --user -U "yt-dlp[default]"
+
+          echo "Checking versions..."
+          node --version
+          ffmpeg -version | head -n 1
+          "$HOME/.local/bin/yt-dlp" --version
 
       - name: Validate source URL
         env:
@@ -28,12 +38,43 @@ jobs:
           python - <<'PY'
           import os
           from urllib.parse import urlparse
+
           u = urlparse(os.environ["VIDEO_URL"])
-          allowed = {"youtube.com", "www.youtube.com",
-                     "m.youtube.com", "youtu.be"}
+          allowed = {
+              "youtube.com",
+              "www.youtube.com",
+              "m.youtube.com",
+              "youtu.be"
+          }
+
           if u.scheme != "https" or u.hostname not in allowed:
               raise SystemExit("Invalid YouTube URL")
+
+          print("YouTube URL validated.")
           PY
+
+      - name: Check stream key
+        env:
+          STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
+        run: |
+          if [ -z "$STREAM_KEY" ]; then
+            echo "::error::YOUTUBE_STREAM_KEY secret is missing"
+            exit 1
+          fi
+
+          echo "Stream key configured."
+
+      - name: Check YouTube video access
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
+        run: |
+          "$HOME/.local/bin/yt-dlp" \
+            --js-runtimes node \
+            --no-playlist \
+            --no-warnings \
+            --simulate \
+            -f "best[ext=mp4][acodec!=none]/best" \
+            "$VIDEO_URL"
 
       - name: Stream to YouTube
         env:
@@ -41,33 +82,49 @@ jobs:
           STREAM_KEY: ${{ secrets.YOUTUBE_STREAM_KEY }}
         shell: bash
         run: |
-          set -o pipefail
-          test -n "$STREAM_KEY"
+          set -euo pipefail
+
+          echo "Starting YouTube Live test..."
 
           set +e
-          timeout --signal=INT 300 bash -c '
-            set -o pipefail
 
-            "$HOME/.local/bin/yt-dlp" \
-              --no-playlist \
-              -f "best[ext=mp4][acodec!=none]/best" \
-              -o - "$VIDEO_URL" |
-            ffmpeg -hide_banner -nostdin -re \
-              -i pipe:0 \
-              -map 0:v:0 -map 0:a:0 \
-              -c:v libx264 -preset veryfast \
-              -pix_fmt yuv420p \
-              -r 30 -g 60 \
-              -b:v 2500k -maxrate 2500k \
-              -bufsize 5000k \
-              -c:a aac -b:a 128k \
-              -ar 44100 \
-              -f flv \
-              "rtmps://a.rtmps.youtube.com/live2/$STREAM_KEY"
-          '
+          timeout --signal=INT --kill-after=15s 300 \
+            bash -c '
+              set -euo pipefail
+
+              "$HOME/.local/bin/yt-dlp" \
+                --js-runtimes node \
+                --no-playlist \
+                -f "best[ext=mp4][acodec!=none]/best" \
+                -o - "$VIDEO_URL" |
+
+              ffmpeg -hide_banner -nostdin \
+                -re -i pipe:0 \
+                -map 0:v:0 -map 0:a:0 \
+                -c:v libx264 \
+                -preset veryfast \
+                -pix_fmt yuv420p \
+                -r 30 -g 60 \
+                -b:v 2500k \
+                -maxrate 2500k \
+                -bufsize 5000k \
+                -c:a aac \
+                -b:a 128k \
+                -ar 44100 \
+                -f flv \
+                "rtmps://a.rtmps.youtube.com/live2/$STREAM_KEY"
+            '
+
           code=$?
+
           if [ "$code" -eq 124 ]; then
-            echo "Five-minute test completed."
+            echo "Five-minute streaming test completed."
             exit 0
           fi
-          exit "$code"
+
+          if [ "$code" -ne 0 ]; then
+            echo "::error::Streaming failed with exit code $code"
+            exit "$code"
+          fi
+
+          echo "Streaming finished."
