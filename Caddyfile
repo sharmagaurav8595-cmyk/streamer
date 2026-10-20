@@ -1,0 +1,7 @@
+{$SITE_ADDRESS:localhost} {
+    encode zstd gzip
+    basic_auth {
+        admin {env.ADMIN_PASSWORD_HASH}
+    }
+    reverse_proxy app:3000
+}
