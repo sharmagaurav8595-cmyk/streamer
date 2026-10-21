@@ -24,6 +24,32 @@ npm start
 
 Open **http://localhost:3000**. The frontend and API are now served by the same Node process. No Vite server is needed.
 
+### Another laptop / Fedora Linux
+
+Extract the complete source ZIP, open a terminal in the folder containing `package.json`, and run `npm install` on that laptop. Node 22.12 or newer is required. For YouTube links, also run `npm run setup:youtube` on that laptop; the local `.tools` installation is excluded from GitHub. Uploaded videos, saved settings and stream keys stay on the original computer, so select/upload your video and enter the key again on a fresh installation.
+
+`npm run dev` now waits for its own backend to listen before launching the studio. The proxy receives the backend's actual address, so a custom `PORT` or `HOST` no longer leaves it pointing at the wrong server. If startup fails, the launcher stops and keeps the backend's actual error visible. Runtime media and tool files are excluded from Vite's file watcher.
+
+**`ECONNREFUSED 127.0.0.1:3000` means the frontend cannot reach the local backend.** It does not diagnose a YouTube or stream-key problem. Stop the dev command with Ctrl+C, then run the API by itself to see the first error:
+
+```sh
+npm run server
+```
+
+On an older copy without that shortcut, use `node --env-file-if-exists=.env server/index.mjs`. Look for the first error before any proxy retries: a missing module/file, a permission error, an invalid `.env` value, or a port already in use. If dependencies are missing, run `npm install --include=optional`. A missing project file must be restored from the complete ZIP. After fixing the reported problem, stop the API with Ctrl+C and run `npm run dev` again. The terminal should show **StreamLoop server** and **Backend ready** before Vite starts.
+
+Alternatively, use `npm run build` followed by `npm start`, then open **http://127.0.0.1:3000** (or your configured `PORT`). This serves the app and API together, without a development proxy. Keep that terminal running.
+
+If **Load video frame** returns HTTP 400 on one laptop, open the error's **Technical details** or **Stream activity**. The app distinguishes a YouTube verification/source error from FFmpeg HTTP, TLS, decoder, executable and timeout failures. `FFmpeg is ready` at startup only checks that the executables run; it does not prove that this computer can access and decode a particular YouTube video.
+
+Run this on the laptop that fails, using the same video link:
+
+```sh
+npm run diagnose:youtube -- "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+The diagnostic prints this computer's OS, Node and selected FFmpeg/FFprobe/yt-dlp versions, resolves the source, then decodes one JPEG in memory using the same code as the app. It does not start a broadcast or save a source video. Errors redact signed media addresses; the command does not read your saved stream key. A successful test on a different laptop does not verify this laptop's binaries or network access. For a downloader/update error, run `npm run setup:youtube`, then restart. For an FFmpeg TLS/codec error, install a suitable FFmpeg build and set `FFMPEG_PATH` / `FFPROBE_PATH` in `.env` to those executables before restarting.
+
 ## YouTube par kaise live karna hai
 
 1. Open [YouTube Studio](https://studio.youtube.com) → **Create → Go live → Stream**. First enable live streaming on your channel; first-time activation can take up to 24 hours.

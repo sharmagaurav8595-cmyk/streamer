@@ -12,6 +12,7 @@ import { normalizeYouTubeUrl } from '../shared/youtube.mjs';
 import { brandingDefaults } from '../shared/branding.mjs';
 import { framingDefaults } from '../shared/framing.mjs';
 import { fontForText } from './fonts.mjs';
+import { previewFailure } from './diagnostics.mjs';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const MB = 1024 ** 2, GB = 1024 ** 3;
@@ -188,7 +189,11 @@ export async function createApplication(options = {}) {
       previewCache = { sourceUrl, video, createdAt: Date.now() };
       res.json(video);
     } catch (error) {
-      if (!res.destroyed) next(fail(abort.signal.aborted ? 'The video frame took too long to load. Try again.' : 'Could not load a frame from this video. Try another public video or upload a local file.', 400));
+      if (!res.destroyed) {
+        const failure = previewFailure(error, { aborted: abort.signal.aborted, key: store.getKey() });
+        store.event(`Video frame [${failure.code}]: ${failure.message}${failure.detail ? `\n${failure.detail}` : ''}`, 'warning');
+        res.status(400).json({ error: failure.message, code: failure.code, detail: failure.detail });
+      }
     } finally {
       clearTimeout(timer); res.removeListener('close', disconnect); previewInProgress = false;
     }

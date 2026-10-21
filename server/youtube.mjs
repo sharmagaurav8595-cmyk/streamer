@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { normalizeYouTubeUrl } from '../shared/youtube.mjs';
 import { ffmpeg, inspectVideo, makeThumbnail } from './media.mjs';
+import { MediaSourceError } from './diagnostics.mjs';
 
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -37,14 +38,17 @@ export async function checkYoutubeDownloader() {
 
 export function youtubeError(error) {
   const message = String(error?.message || error);
-  if (error?.name === 'AbortError') return error;
-  if (/ENOENT|not recognized|not found.*yt-dlp/i.test(message)) return new Error('YouTube support is not installed. Run npm run setup:youtube and restart the app.');
-  if (/sign in|sign-in|bot|captcha|confirm your age|cookies/i.test(message)) return new Error('YouTube requires verification for this video. Try another public video or upload the video file.');
-  if (/private|members.only|unavailable|removed|not available|geo.restrict|copyright/i.test(message)) return new Error('This YouTube video is private, unavailable, or restricted. Use an accessible public recorded video.');
-  if (/max.filesize|larger than|max.file.size|storage|disk space/i.test(message)) return new Error('This video exceeds the available storage or video size limit. Use a smaller video or free some space.');
-  if (/live|upcoming|scheduled/i.test(message)) return new Error('Use a recorded YouTube video. Currently-live and scheduled broadcasts are not supported as sources.');
-  if (/timed? ?out|ECONN|network|HTTP Error|403|429/i.test(message)) return new Error('YouTube could not deliver this video. Check your connection, try again, or upload the video file.');
-  return new Error('Could not prepare this YouTube video. Try another public recorded video, or run npm run setup:youtube to update the downloader.');
+  if (error?.name === 'AbortError' || error instanceof MediaSourceError) return error;
+  const fail = (code, text) => new MediaSourceError(code, text, error?.stderr || message);
+  if (/ENOENT|not recognized|not found.*yt-dlp/i.test(message)) return fail('YOUTUBE_MISSING', 'YouTube support is not installed. Run npm run setup:youtube and restart the app.');
+  if (/no such option|unrecognized (option|argument)|unsupported.*js.runtime|no supported javascript|challenge solving failed|signature extraction failed|n challenge/i.test(message)) return fail('YOUTUBE_UPDATE', 'This YouTube downloader or its JavaScript support needs updating. Run npm run setup:youtube, then restart the app.');
+  if (/sign in|sign-in|bot|captcha|confirm your age|cookies/i.test(message)) return fail('YOUTUBE_VERIFICATION', 'YouTube requires verification for this video. Try another public video or upload the video file.');
+  if (/requested format.*not available|no playable.*format/i.test(message)) return fail('YOUTUBE_FORMAT', 'YouTube did not offer a playable format on this computer. Run npm run setup:youtube and restart, or upload an MP4 file.');
+  if (/private|members.only|unavailable|removed|not available|geo.restrict|copyright/i.test(message)) return fail('YOUTUBE_RESTRICTED', 'This YouTube video is private, unavailable, or restricted. Use an accessible public recorded video.');
+  if (/max.filesize|larger than|max.file.size|storage|disk space/i.test(message)) return fail('YOUTUBE_STORAGE', 'This video exceeds the available storage or video size limit. Use a smaller video or free some space.');
+  if (/\blive\b|upcoming|scheduled/i.test(message)) return fail('YOUTUBE_LIVE', 'Use a recorded YouTube video. Currently-live and scheduled broadcasts are not supported as sources.');
+  if (/timed? ?out|ECONN|network|HTTP Error|403|429/i.test(message)) return fail('YOUTUBE_NETWORK', 'YouTube could not deliver this video. Check your connection, try again, or upload the video file.');
+  return fail('YOUTUBE_SOURCE', 'Could not prepare this YouTube video. Try another public recorded video, or run npm run setup:youtube to update the downloader.');
 }
 
 function removeWorkDirectory(directory, incoming) {

@@ -8,6 +8,7 @@ import { Store } from '../server/store.mjs';
 import { StreamController } from '../server/encoder.mjs';
 import { createApplication, validateSettings } from '../server/app.mjs';
 import { FakeEncoder, makeFixture, temporaryDirectory } from './helpers.mjs';
+import { youtubeError } from '../server/youtube.mjs';
 
 async function serverFor(t, options = {}) {
   const directory = temporaryDirectory(t);
@@ -155,6 +156,30 @@ test('YouTube frame previews normalize URLs, reuse the image and never save the 
   assert.equal(store.state.desiredRunning, false);
   const invalid = await fetch(`${base}/api/youtube/preview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ youtubeUrl: 'http://127.0.0.1/private' }) });
   assert.equal(invalid.status, 400);
+});
+
+test('preview errors expose a safe reason, record it in activity and release the preview lock', async t => {
+  const secret = 'preview-test-key-12345';
+  let attempts = 0;
+  const { base, store } = await serverFor(t, { youtubeAvailable: true, previewYoutube: async () => {
+    attempts++;
+    if (attempts === 1) throw youtubeError(new Error('Sign in to confirm you are not a bot'));
+    throw Object.assign(new Error('FFmpeg failed'), { stderr: `Server returned 403 Forbidden for https://rr1.googlevideo.com/video?sig=SECRET_ADDRESS\n${secret}` });
+  } });
+  store.setKey(secret);
+  for (const code of ['YOUTUBE_VERIFICATION', 'MEDIA_ACCESS_DENIED']) {
+    const response = await fetch(`${base}/api/youtube/preview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ youtubeUrl: 'https://youtu.be/jNQXAC9IVRw' }) });
+    assert.equal(response.status, 400);
+    const failure = await response.json();
+    assert.equal(failure.code, code);
+    assert.ok(failure.detail);
+    assert.doesNotMatch(JSON.stringify(failure), /SECRET_ADDRESS|rr1.googlevideo|preview-test-key/);
+  }
+  assert.equal(attempts, 2, 'A failed frame must not leave the preview job locked.');
+  assert.match(store.state.events[0].message, /MEDIA_ACCESS_DENIED/);
+  assert.doesNotMatch(JSON.stringify(store.state.events), /SECRET_ADDRESS|rr1.googlevideo|preview-test-key/);
+  assert.equal(store.state.desiredRunning, false);
+  assert.deepEqual(store.state.videos, []);
 });
 
 test('YouTube start is asynchronous, saves a canonical URL, and Stop cancels preparation', async t => {

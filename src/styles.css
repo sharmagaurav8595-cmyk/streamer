@@ -145,6 +145,10 @@ h1 > span { color: var(--purple); }
 .youtube-source-input .youtube-mode { margin-top: 14px; margin-bottom: 0; }
 .source-watch { margin-top: 15px; display: inline-flex; align-items: center; gap: 4px; }
 .source-error { margin: 7px 0; color: #c1667e; font-size: 11px; line-height: 1.7; }
+.preview-diagnostic p { margin: 0; }
+.preview-diagnostic details { margin-top: 6px; }
+.preview-diagnostic summary { cursor: pointer; overflow-wrap: anywhere; }
+.preview-diagnostic pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 10px; padding: 9px; background: #fff7f8; border: 1px solid #f3dbe1; border-radius: 5px; max-height: 180px; overflow: auto; }
 .source-install-note { display: flex; flex-direction: column; gap: 7px; margin-top: 13px; padding: 12px; border-radius: 6px; background: #fff8ee; border: 1px solid #f0e0c4; font-size: 10px; line-height: 1.6; color: #ad8a54; }
 .source-install-note strong { font-weight: 550; }.source-install-note code { font-size: 10px; }
 .youtube-source-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; border: 1px dashed #e3d6f2; border-radius: 8px; background: linear-gradient(145deg,#fcfaff,#f9f5ff); padding: 24px 20px; min-height: 210px; }

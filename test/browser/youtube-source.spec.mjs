@@ -62,6 +62,23 @@ test('a YouTube link prepares on the server, survives reload, and automatically 
   }
 });
 
+test('failed frame loads show the actual reason and expandable technical details', async ({ page }) => {
+  await page.route('**/api/youtube/preview', route => route.fulfill({
+    status: 400, contentType: 'application/json',
+    body: JSON.stringify({ error: 'The secure video connection failed on this computer.', code: 'MEDIA_TLS', detail: 'gnutls_handshake() failed: TLS connection terminated' }),
+  }));
+  await page.goto('/');
+  await page.getByRole('tab', { name: 'YouTube link' }).click();
+  await page.getByLabel('YouTube video link').fill('https://youtu.be/jNQXAC9IVRw');
+  await page.getByRole('button', { name: 'Load video frame', exact: true }).click();
+  const error = page.locator('.preview-diagnostic');
+  await expect(error).toContainText('The secure video connection failed on this computer.');
+  await error.getByText('Technical details', { exact: false }).click();
+  await expect(error.locator('pre')).toBeVisible();
+  await expect(error.locator('pre')).toContainText('gnutls_handshake() failed');
+  await expect(page.getByRole('button', { name: 'Load video frame', exact: true })).toBeEnabled();
+});
+
 test('YouTube preparation can be cancelled and unavailable videos show a readable error', async ({ page, request }) => {
   try {
     await page.goto('/');
