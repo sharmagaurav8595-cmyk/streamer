@@ -53,3 +53,21 @@ export async function makeThumbnail(input, output, duration, { signal } = {}) {
     '-frames:v', '1', '-vf', 'scale=960:-2', '-threads', '2', '-q:v', '4', '-y', output,
   ], { timeout: 30000, maxBuffer: 1024 * 1024, windowsHide: true, signal });
 }
+
+export async function captureRemotePreview(source, { signal } = {}) {
+  const input = source.inputs[0];
+  const headers = Object.entries(input.headers || {}).map(([name, value]) => `${name}: ${value}\r\n`).join('');
+  const args = ['-hide_banner', '-loglevel', 'error', '-rw_timeout', '15000000', '-protocol_whitelist', 'https,http,tls,tcp,crypto'];
+  if (headers) args.push('-headers', headers);
+  args.push('-i', input.url, '-an', '-frames:v', '1', '-vf', 'scale=trunc(iw*sar/2)*2:ih,setsar=1,scale=960:-2', '-threads', '2', '-q:v', '3', '-f', 'image2pipe', '-vcodec', 'mjpeg', 'pipe:1');
+  const { stdout } = await execute(ffmpeg, args, { encoding: 'buffer', timeout: 20000, maxBuffer: 2 * 1024 ** 2, windowsHide: true, signal });
+  // This is FFmpeg's own JPEG output; read its frame dimensions before returning it.
+  for (let offset = 2; offset + 9 < stdout.length;) {
+    if (stdout[offset] !== 0xff) break;
+    const marker = stdout[offset + 1], length = stdout.readUInt16BE(offset + 2);
+    if (marker === 0xc0 || marker === 0xc2) return { width: stdout.readUInt16BE(offset + 7), height: stdout.readUInt16BE(offset + 5), thumbnailUrl: `data:image/jpeg;base64,${stdout.toString('base64')}` };
+    if (length < 2) break;
+    offset += length + 2;
+  }
+  throw new Error('The video frame could not be read.');
+}

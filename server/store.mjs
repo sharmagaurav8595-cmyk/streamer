@@ -1,10 +1,15 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import { brandingDefaults } from '../shared/branding.mjs';
+import { framingDefaults } from '../shared/framing.mjs';
 
 export const defaultSettings = () => ({
   name: 'My YouTube stream', videoId: null, quality: '720p', loop: true, endAt: null,
   source: 'upload', youtubeUrl: '', youtubeMode: 'direct',
+  layout: 'vertical', frameFit: 'cover',
+  ...brandingDefaults,
+  ...framingDefaults,
 });
 
 export class Store {

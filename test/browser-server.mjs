@@ -9,10 +9,12 @@ import { copyFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 import { StreamController } from '../server/encoder.mjs';
 import { YoutubeImporter } from '../server/youtube.mjs';
+import { makeThumbnail } from '../server/media.mjs';
 
 mkdirSync(resolve('.tools'), { recursive: true });
 process.env.NODE_ENV = 'production';
 await makeFixture(resolve('.tools/browser-fixture.mp4'), true);
+await makeThumbnail(resolve('.tools/browser-fixture.mp4'), resolve('.tools/browser-preview.jpg'), 0.8);
 // A valid MP4 free-space atom makes a large fixture without a long encode.
 const padding = Buffer.alloc(32 * 1024 * 1024 + 8);
 padding.writeUInt32BE(padding.length);
@@ -41,7 +43,12 @@ const testController = new StreamController(store, { encoderAvailable: true, spa
   queueMicrotask(() => child.progress());
   return child;
 } });
-const { app, controller } = await createApplication({ store, controller: testController, youtubeImporter, youtubeAvailable: true });
+const { app, controller } = await createApplication({ store, controller: testController, youtubeImporter, youtubeAvailable: true,
+  previewYoutube: async (_url, { signal }) => {
+    await delay(100, null, { signal });
+    return { name: 'YouTube source frame', width: 960, height: 540, duration: 0.8, thumbnailUrl: `data:image/jpeg;base64,${readFileSync(resolve('.tools/browser-preview.jpg')).toString('base64')}` };
+  },
+});
 const server = app.listen(3100, '127.0.0.1');
 async function stop() {
   await controller.shutdown();

@@ -20,6 +20,7 @@ COPY --from=build /app/dist ./dist
 COPY server ./server
 COPY shared ./shared
 COPY scripts/setup-youtube.mjs ./scripts/setup-youtube.mjs
+COPY public/stream-overlays ./public/stream-overlays
 RUN node scripts/setup-youtube.mjs
 USER node
 EXPOSE 3000

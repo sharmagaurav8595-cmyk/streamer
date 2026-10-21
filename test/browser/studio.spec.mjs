@@ -65,3 +65,40 @@ test('mobile layout fits the screen and keeps navigation and help usable', async
   await page.getByRole('button', { name: 'Stream studio', exact: true }).click();
   await page.screenshot({ path: '.tools/studio-mobile.png', fullPage: true });
 });
+
+test('vertical output shows its resolution, previews framing and saves format settings', async ({ page, request }) => {
+  let videoId;
+  try {
+    await request.put('/api/settings', { data: { source: 'upload', layout: 'vertical', frameFit: 'cover', quality: '720p' } });
+    await page.goto('/');
+    await expect(page.getByLabel('Output format', { exact: true })).toHaveValue('vertical');
+    await expect(page.getByRole('status', { name: 'Outgoing video format' })).toContainText('720 × 1280');
+    await page.getByLabel('Upload video file').setInputFiles(resolve('.tools/browser-fixture.mp4'));
+    await expect(page.getByRole('button', { name: 'Play uploaded video preview' })).toBeVisible();
+    const state = await (await request.get('/api/state')).json();
+    videoId = state.videos.find(video => video.name === 'browser-fixture.mp4').id;
+    const preview = page.getByRole('group', { name: 'Stream layout preview' });
+    const bounds = await preview.boundingBox();
+    expect(bounds.width / bounds.height).toBeCloseTo(9 / 16, 2);
+    await expect(preview.locator('img')).toHaveCSS('object-fit', 'cover');
+    await page.getByLabel('Video framing', { exact: true }).selectOption('contain');
+    await expect(preview.locator('img')).toHaveCSS('object-fit', 'contain');
+    await page.getByLabel('Streaming quality', { exact: true }).selectOption('1080p');
+    await expect(page.getByRole('status', { name: 'Outgoing video format' })).toContainText('1080 × 1920');
+    await page.getByRole('button', { name: 'Save settings' }).click();
+    await expect(page.getByText('Settings saved on your server.')).toBeVisible();
+    await page.reload();
+    await expect(page.getByLabel('Output format', { exact: true })).toHaveValue('vertical');
+    await expect(page.getByLabel('Video framing', { exact: true })).toHaveValue('contain');
+    await expect(page.getByLabel('Streaming quality', { exact: true })).toHaveValue('1080p');
+    await page.getByLabel('Output format', { exact: true }).selectOption('horizontal');
+    await expect(page.getByRole('status', { name: 'Outgoing video format' })).toContainText('1920 × 1080');
+    const horizontal = await preview.boundingBox();
+    expect(horizontal.width / horizontal.height).toBeCloseTo(16 / 9, 2);
+    await page.getByLabel('Output format', { exact: true }).selectOption('vertical');
+    await page.screenshot({ path: '.tools/vertical-studio-preview.png', fullPage: true });
+  } finally {
+    if (videoId) await request.delete(`/api/videos/${videoId}`);
+    await request.put('/api/settings', { data: { source: 'upload', layout: 'vertical', frameFit: 'cover', quality: '720p', videoId: null } });
+  }
+});

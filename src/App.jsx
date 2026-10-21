@@ -7,6 +7,11 @@ import {
   Square, Trash2, Video, Waves, Wifi, X, Youtube,
 } from 'lucide-react';
 import { normalizeYouTubeUrl } from '../shared/youtube.mjs';
+import { outputFrame } from '../shared/output.mjs';
+import { brandingDefaults, brandingLayout } from '../shared/branding.mjs';
+import { BrandingLayer, BrandingSettings } from './Branding.jsx';
+import FramingControls from './FramingControls.jsx';
+import { framingDefaults, videoFraming, sourceCropPreview } from '../shared/framing.mjs';
 
 const activeStatuses = ['preparing', 'connecting', 'streaming', 'reconnecting', 'stopping'];
 const statusLabels = { idle: 'Ready to stream', preparing: 'Preparing YouTube video', connecting: 'Connecting', streaming: 'Sending to YouTube', reconnecting: 'Reconnecting', stopping: 'Stopping', finished: 'Stream finished', error: 'Needs attention' };
@@ -27,8 +32,9 @@ function localDate(value) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}T${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 async function api(path, options = {}) {
+  const { timeoutMs = 15000, ...requestOptions } = options;
   const response = await fetch(`/api${path}`, {
-    ...options, headers: { 'Content-Type': 'application/json', ...options.headers }, signal: AbortSignal.timeout(15000),
+    ...requestOptions, headers: { 'Content-Type': 'application/json', ...options.headers }, signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
   });
   let body;
   try { body = await response.json(); }
@@ -76,16 +82,25 @@ function YoutubePreparation({ progress, onCancel }) {
   </div>;
 }
 
-function VideoPreview({ video, playing, onPlay, onError, playbackError }) {
-  return <div className="video-preview">
-    {playing && !playbackError
+function VideoPreview({ video, frame, settings, playing, onPlay, onStop, onError, playbackError }) {
+  const branding = brandingLayout(frame, settings);
+  const framing = videoFraming(settings);
+  const sourceCrop = sourceCropPreview({ ...frame, height: branding.enabled ? branding.contentHeight : frame.height }, video, settings);
+  return <div className={`video-preview ${frame.layout === 'vertical' ? 'vertical-output' : ''} ${branding.enabled ? 'branding-enabled' : ''}`} style={{ aspectRatio: `${frame.width} / ${frame.height}`, '--preview-fit': frame.frameFit, '--video-top': `${branding.top / frame.height * 100}%`, '--video-height': `${branding.contentHeight / frame.height * 100}%`, '--banner-bottom': `${branding.bottom / frame.height * 100}%` }} role="group" aria-label={video ? 'Stream layout preview' : 'Stream overlay preview'}>
+    <div className="video-window" style={{ '--video-focus': `${framing.videoPositionX}% ${framing.videoPositionY}%`, '--video-zoom': framing.videoZoom }}>
+    <div className={sourceCrop ? 'source-crop-frame' : 'uncropped-frame'} style={{ ...sourceCrop?.frame, '--source-image-height': sourceCrop?.image.height, '--source-image-top': sourceCrop?.image.top }}>
+    {video && !video.previewOnly && playing && !playbackError
       ? <video key={video.id} controls autoPlay playsInline preload="metadata" poster={video.thumbnailUrl || undefined} onError={onError}><source src={video.url} /></video>
       : <>
-        {video.thumbnailUrl ? <img src={video.thumbnailUrl} alt={`Preview of ${video.name}`} /> : <div className="preview-placeholder"><Film size={52} /></div>}
-        {!playbackError && <button className="preview-play" onClick={onPlay} aria-label={video.sourceType === 'youtube' ? 'Play YouTube video preview' : 'Play uploaded video preview'}><Play size={25} fill="currentColor" /></button>}
-        {playbackError && <div className="preview-error"><Video size={28} /><span>This format cannot be previewed in your browser.<br />The server can still stream it.</span><a href={video.url} download className="preview-download"><ArrowDownToLine size={15} /> Download original</a></div>}
+        {video?.thumbnailUrl ? <img src={video.thumbnailUrl} alt={`Preview of ${video.name}`} /> : <div className="preview-placeholder"><Film size={52} />{!video && <small>Your video appears here</small>}</div>}
       </>}
-    <span className="video-duration">{formatDuration(video.duration)}</span>
+    </div>
+    </div>
+    {video && !video.previewOnly && !playing && !playbackError && <button className="preview-play" onClick={onPlay} aria-label={video.sourceType === 'youtube' ? 'Play YouTube video preview' : 'Play uploaded video preview'}><Play size={25} fill="currentColor" /></button>}
+    {playing && onStop && <button className="preview-stop" onClick={onStop} aria-label="Stop source preview"><Square size={11} fill="currentColor" /> Stop preview</button>}
+    {playbackError && <div className="preview-error"><Video size={28} /><span>This format cannot be previewed in your browser.<br />The server can still stream it.</span><a href={video.url} download className="preview-download"><ArrowDownToLine size={15} /> Download original</a></div>}
+    {branding.enabled && <BrandingLayer frame={frame} settings={settings} />}
+    {video && <span className="video-duration">{formatDuration(video.duration)}</span>}
   </div>;
 }
 
@@ -105,6 +120,10 @@ export default function App() {
   const [now, setNow] = useState(Date.now());
   const [playing, setPlaying] = useState(false);
   const [playbackError, setPlaybackError] = useState(false);
+  const [youtubePreview, setYoutubePreview] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+  const previewAbort = useRef(null);
   const fileInput = useRef(null);
   const xhrRef = useRef(null);
   const toastTimer = useRef(null);
@@ -140,7 +159,10 @@ export default function App() {
     return () => { disposed = true; clearTimeout(timer); clearInterval(clock); };
   }, [acceptState]);
   useEffect(() => { setPlaying(false); setPlaybackError(false); }, [form?.videoId, form?.source, form?.youtubeUrl]);
-  useEffect(() => () => { clearTimeout(toastTimer.current); xhrRef.current?.abort(); }, []);
+  useEffect(() => {
+    previewAbort.current?.abort(); setYoutubePreview(null); setPreviewError(''); setPreviewLoading(false);
+  }, [form?.youtubeUrl, form?.source]);
+  useEffect(() => () => { clearTimeout(toastTimer.current); xhrRef.current?.abort(); previewAbort.current?.abort(); }, []);
 
   const stream = data?.stream;
   const running = stream && (activeStatuses.includes(stream.status) || stream.desiredRunning);
@@ -153,14 +175,31 @@ export default function App() {
     catch (error) { youtubeUrlError = error.message; }
   }
   const selectedVideo = directYoutube ? null : data?.videos.find(video => youtubeSource ? video.sourceUrl === normalizedYoutubeUrl : video.id === form?.videoId);
+  const sourcePreview = youtubePreview?.sourceUrl === normalizedYoutubeUrl ? youtubePreview : null;
   const keyReady = Boolean(data?.settings.keySet || streamKey.trim());
-  const dirty = Boolean(data && form && (streamKey || ['name', 'videoId', 'quality', 'loop', 'endAt', 'source', 'youtubeUrl', 'youtubeMode'].some(key => form[key] !== data.settings[key])));
+  const dirty = Boolean(data && form && (streamKey || ['name', 'videoId', 'quality', 'loop', 'endAt', 'source', 'youtubeUrl', 'youtubeMode', 'layout', 'frameFit', 'overlayEnabled', 'overlayName', 'followText', 'subscribeText', 'videoZoom', 'videoPositionX', 'videoPositionY', 'sourceTrimTop', 'sourceTrimBottom'].some(key => form[key] !== data.settings[key])));
+  const frame = outputFrame(form || {});
+  const qualityFrame = quality => outputFrame({ ...form, quality });
   const elapsed = stream?.startedAt ? (now - new Date(stream.startedAt).getTime()) / 1000 : 0;
   const sourceReady = youtubeSource ? Boolean(normalizedYoutubeUrl && data?.youtube?.available) : Boolean(selectedVideo);
-  const canStart = connected && sourceReady && keyReady && stream?.encoderAvailable && !busy && !upload;
+  const overlayValues = { ...brandingDefaults, ...form };
+  const brandingReady = !overlayValues.overlayEnabled || Boolean(overlayValues.overlayName?.trim() && overlayValues.followText?.trim() && overlayValues.subscribeText?.trim());
+  const canStart = connected && sourceReady && keyReady && brandingReady && stream?.encoderAvailable && !busy && !upload && !previewLoading;
   const change = (key, value) => setForm(previous => ({ ...previous, [key]: value }));
   const selectVideo = id => setForm(previous => ({ ...previous, source: 'upload', videoId: id }));
   const chooseFile = () => fileInput.current?.click();
+
+  async function loadYoutubeFrame() {
+    if (!normalizedYoutubeUrl || previewLoading) return;
+    const abort = new AbortController();
+    previewAbort.current?.abort(); previewAbort.current = abort;
+    setPreviewLoading(true); setPreviewError('');
+    try {
+      const preview = await api('/youtube/preview', { method: 'POST', body: JSON.stringify({ youtubeUrl: normalizedYoutubeUrl }), timeoutMs: 55000, signal: abort.signal });
+      if (!abort.signal.aborted) setYoutubePreview(preview);
+    } catch (error) { if (!abort.signal.aborted) setPreviewError(error.message); }
+    finally { if (previewAbort.current === abort) setPreviewLoading(false); }
+  }
 
   async function command(path, action, method = 'POST') {
     setBusy(action);
@@ -259,15 +298,21 @@ export default function App() {
                   <label className="field"><span>Stream name <span className="optional">only visible to you</span></span><input value={form.name} onChange={e => change('name', e.target.value)} disabled={locked} placeholder="e.g. My 24/7 gaming stream" maxLength={120} /></label>
                   <label className="field"><span>Platform</span><div className="platform-field"><span className="youtube-icon"><Youtube size={21} fill="currentColor" /></span><span>YouTube Live</span><span className="connected-tag">RTMPS</span><ChevronDown size={15} /></div></label>
                   <div className="field"><label htmlFor="stream-key" className="field-label">Stream key <a href="https://studio.youtube.com" target="_blank" rel="noreferrer">Find your key <ArrowUpRight size={12} /></a></label><div className="key-input"><KeyRound size={16} /><input id="stream-key" aria-label="Stream key" type={showKey ? 'text' : 'password'} autoComplete="new-password" spellCheck={false} value={streamKey} onChange={e => setStreamKey(e.target.value)} disabled={locked} placeholder={data.settings.keySet ? '••••••••••••••••••••  (saved)' : 'Paste your YouTube stream key'} /><button className="icon-button" disabled={locked} onClick={() => setShowKey(value => !value)} aria-label={showKey ? 'Hide stream key' : 'Show stream key'}>{showKey ? <EyeOff size={17} /> : <Eye size={17} />}</button></div><span className="field-hint"><ShieldCheck size={12} /> {data.settings.keySet ? 'Key saved securely. Paste a new key to replace it.' : 'Encrypted on your server. No YouTube login needed here.'}</span></div>
-                  <label className="field"><span>Streaming quality</span><div className="select-wrap"><select value={form.quality} onChange={e => change('quality', e.target.value)} disabled={locked}><option value="720p">720p HD · 30 fps · 4 Mbps</option><option value="1080p">1080p Full HD · 30 fps · 6 Mbps</option></select><ChevronDown size={15} /></div></label>
+                  <label className="field"><span>Output format</span><div className="select-wrap"><select aria-label="Output format" value={form.layout || 'vertical'} onChange={e => change('layout', e.target.value)} disabled={locked}><option value="vertical">Vertical 9:16 — Reels / Shorts style</option><option value="horizontal">Horizontal 16:9 — widescreen</option></select><ChevronDown size={15} /></div></label>
+                  <label className="field"><span>Video framing</span><div className="select-wrap"><select aria-label="Video framing" value={form.frameFit || 'cover'} onChange={e => change('frameFit', e.target.value)} disabled={locked}><option value="cover">Fill frame — centre crop</option><option value="contain">Fit full video — black bars</option></select><ChevronDown size={15} /></div><span className="field-hint">{frame.frameFit === 'cover' ? 'Fills the frame without stretching. Edges outside the frame are cropped.' : 'Keeps the whole picture without stretching. Empty space is filled with black.'}</span></label>
+                  <FramingControls settings={form} disabled={locked || !data.features?.videoFraming} onChange={change} onReset={() => setForm(previous => ({ ...previous, ...framingDefaults }))} />
+                  <label className="field"><span>Streaming quality</span><div className="select-wrap"><select aria-label="Streaming quality" value={form.quality} onChange={e => change('quality', e.target.value)} disabled={locked}><option value="720p">HD · {qualityFrame('720p').width} × {qualityFrame('720p').height} · 4 Mbps</option><option value="1080p">Full HD · {qualityFrame('1080p').width} × {qualityFrame('1080p').height} · 6 Mbps</option></select><ChevronDown size={15} /></div></label>
+                  <div className="output-summary" role="status" aria-label="Outgoing video format"><Video size={16} /><span><strong>{frame.width} × {frame.height} · {frame.aspectRatio}</strong><small>{frame.layout === 'vertical' ? 'Vertical output to YouTube' : 'Horizontal output to YouTube'} · 30 fps</small></span></div>
+                  <BrandingSettings settings={form} disabled={locked} available={data.features?.streamOverlay === true} onChange={change} />
                   <div className="loop-row"><span className="loop-icon"><InfinityIcon size={21} /></span><div><strong>Loop video</strong><span>{form.loop ? 'Play again when the video ends' : 'Stop when the video finishes'}</span></div><button type="button" role="switch" aria-checked={form.loop} aria-label="Loop video" className={`toggle ${form.loop ? 'on' : ''}`} onClick={() => change('loop', !form.loop)} disabled={locked}><span /></button></div>
                   <div className="end-time-heading"><label htmlFor="end-time">Stop automatically <span className="optional">optional</span></label>{form.endAt && !locked && <button className="text-button" onClick={() => change('endAt', null)}>Clear</button>}</div><div className="end-time-input"><Clock3 size={16} /><input id="end-time" type="datetime-local" aria-label="Stream end time" value={localDate(form.endAt)} min={localDate(new Date(now + 60000).toISOString())} onChange={e => change('endAt', e.target.value ? new Date(e.target.value).toISOString() : null)} disabled={locked} /></div><p className="field-hint time-hint">{form.endAt ? `Your timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}` : 'Leave empty to stream without a time limit.'}</p>
                 </div>
                 <div className="video-column"><div className="video-section-heading"><div className="section-label"><span>02</span> Your video</div>{data.videos.length > 0 && !youtubeSource && <button className="text-button" onClick={() => setDialog('choose')} disabled={locked}><RefreshCw size={13} /> Change video</button>}</div>
                   <div className="source-tabs" role="tablist" aria-label="Video source"><button id="source-upload" role="tab" aria-selected={!youtubeSource} aria-controls="source-panel" className={!youtubeSource ? 'selected' : ''} disabled={locked || Boolean(upload)} onClick={() => change('source', 'upload')}><CloudUpload size={16} /> Upload video</button><button id="source-youtube" role="tab" aria-selected={youtubeSource} aria-controls="source-panel" className={youtubeSource ? 'selected' : ''} disabled={locked || Boolean(upload)} onClick={() => change('source', 'youtube')}><Youtube size={17} /> YouTube link</button></div>
                   <div id="source-panel" role="tabpanel" aria-labelledby={youtubeSource ? 'source-youtube' : 'source-upload'}>
-                  {youtubeSource && <div className="youtube-source-input"><label className="field"><span>YouTube video link</span><div className="key-input"><Link2 size={17} /><input aria-label="YouTube video link" type="url" value={form.youtubeUrl || ''} placeholder="https://www.youtube.com/watch?v=…" disabled={locked} onChange={event => change('youtubeUrl', event.target.value)} spellCheck={false} /></div></label>{youtubeUrlError && <p className="source-error" role="alert">{youtubeUrlError}</p>}<p className="field-hint">Public recorded videos · watch links, Shorts & youtu.be</p><label className="field youtube-mode"><span>Playback mode</span><div className="select-wrap"><select aria-label="YouTube playback mode" value={form.youtubeMode || 'direct'} disabled={locked} onChange={event => change('youtubeMode', event.target.value)}><option value="direct">Direct stream — no file saved</option><option value="download">Download first — save a copy</option></select><ChevronDown size={15} /></div></label>{!data.youtube?.available && <div className="source-install-note"><strong>YouTube link support needs a one-time setup.</strong><span>Run <code>npm run setup:youtube</code>, then restart the app.</span></div>}</div>}
-                  {stream.status === 'preparing' ? <YoutubePreparation progress={stream.preparation} onCancel={() => command('/stream/stop', 'stop')} /> : upload ? <UploadProgress upload={upload} onCancel={() => xhrRef.current?.abort()} /> : selectedVideo ? <div className="selected-video"><VideoPreview video={selectedVideo} playing={playing} onPlay={() => setPlaying(true)} playbackError={playbackError} onError={() => setPlaybackError(true)} /><div className="selected-video-info"><span className="file-icon"><Film size={20} /></span><div><strong title={selectedVideo.name}>{selectedVideo.name}</strong><span>{formatBytes(selectedVideo.size)}<i />{selectedVideo.width} × {selectedVideo.height}<i />{selectedVideo.hasAudio ? 'With audio' : 'Silent audio added'}</span></div><span className="video-ready"><CheckCircle2 size={17} /></span></div></div> : youtubeSource ? <div className="youtube-source-empty"><span><Youtube size={31} /></span><strong>{directYoutube ? running && stream.source?.direct ? 'Streaming directly from YouTube' : 'Stream without saving a video file.' : 'A link is all you need.'}</strong><p>{directYoutube && running && stream.source?.title ? stream.source.title : <>Paste your video link, add a stream key, and click <b>Start streaming</b>.</>}</p><small>{directYoutube ? 'Video and audio flow straight to your stream. Only a small memory buffer is used.' : 'Your video is saved on this device first, then streaming starts automatically.'}</small>{directYoutube && normalizedYoutubeUrl && <a className="text-button source-watch" href={normalizedYoutubeUrl} target="_blank" rel="noreferrer">Watch source on YouTube <ArrowUpRight size={12} /></a>}</div> : <EmptyVideo onUpload={chooseFile} disabled={locked || !stream.encoderAvailable} limit={data.storage.maxUpload} dragOver={dragOver} onDragOver={e => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={drop} />}
+                  {youtubeSource && <div className="youtube-source-input"><label className="field"><span>YouTube video link</span><div className="key-input"><Link2 size={17} /><input aria-label="YouTube video link" type="url" value={form.youtubeUrl || ''} placeholder="https://www.youtube.com/watch?v=…" disabled={locked} onChange={event => change('youtubeUrl', event.target.value)} spellCheck={false} /></div></label>{youtubeUrlError && <p className="source-error" role="alert">{youtubeUrlError}</p>}<p className="field-hint">Public recorded videos · watch links, Shorts & youtu.be</p><label className="field youtube-mode"><span>Playback mode</span><div className="select-wrap"><select aria-label="YouTube playback mode" value={form.youtubeMode || 'direct'} disabled={locked} onChange={event => change('youtubeMode', event.target.value)}><option value="direct">Direct stream — no file saved</option><option value="download">Download first — save a copy</option></select><ChevronDown size={15} /></div></label>{data.features?.videoFraming && <div className="source-preview-actions"><button type="button" className="text-button" disabled={!normalizedYoutubeUrl || previewLoading || !connected} onClick={loadYoutubeFrame}>{previewLoading ? <Loader2 size={13} className="spin" /> : <Film size={13} />} {previewLoading ? 'Loading video frame...' : sourcePreview ? 'Reload video frame' : 'Load video frame'}</button><small>One still frame for cropping. No video file is saved.</small></div>}{previewError && <p className="source-error" role="alert">{previewError}</p>}{!data.youtube?.available && <div className="source-install-note"><strong>YouTube link support needs a one-time setup.</strong><span>Run <code>npm run setup:youtube</code>, then restart the app.</span></div>}</div>}
+                  {stream.status === 'preparing' ? <YoutubePreparation progress={stream.preparation} onCancel={() => command('/stream/stop', 'stop')} /> : upload ? <UploadProgress upload={upload} onCancel={() => xhrRef.current?.abort()} /> : selectedVideo ? <div className="selected-video"><VideoPreview video={selectedVideo} frame={frame} settings={form} playing={playing} onStop={() => setPlaying(false)} onPlay={() => setPlaying(true)} playbackError={playbackError} onError={() => setPlaybackError(true)} /><div className="selected-video-info"><span className="file-icon"><Film size={20} /></span><div><strong title={selectedVideo.name}>{selectedVideo.name}</strong><span>{formatBytes(selectedVideo.size)}<i />{selectedVideo.width} × {selectedVideo.height}<i />{selectedVideo.hasAudio ? 'With audio' : 'Silent audio added'}</span></div><span className="video-ready"><CheckCircle2 size={17} /></span></div></div> : youtubeSource ? <div className="youtube-source-empty"><span><Youtube size={31} /></span><strong>{directYoutube ? running && stream.source?.direct ? 'Streaming directly from YouTube' : 'Stream without saving a video file.' : 'A link is all you need.'}</strong><p>{directYoutube && running && stream.source?.title ? stream.source.title : <>Paste your video link, add a stream key, and click <b>Start streaming</b>.</>}</p><small>{directYoutube ? 'Video and audio flow straight to your stream. Only a small memory buffer is used.' : 'Your video is saved on this device first, then streaming starts automatically.'}</small>{directYoutube && normalizedYoutubeUrl && <a className="text-button source-watch" href={normalizedYoutubeUrl} target="_blank" rel="noreferrer">Watch source on YouTube <ArrowUpRight size={12} /></a>}</div> : <EmptyVideo onUpload={chooseFile} disabled={locked || !stream.encoderAvailable} limit={data.storage.maxUpload} dragOver={dragOver} onDragOver={e => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={drop} />}
+                  {(form.overlayEnabled || sourcePreview) && !selectedVideo && !upload && stream.status !== 'preparing' && <div className="branding-demo"><VideoPreview video={sourcePreview} frame={frame} settings={form} /><p>{sourcePreview ? 'Still frame for crop adjustment' : 'Overlay preview'} · check the source video in YouTube Studio once connected.</p></div>}
                   {selectedVideo && !upload && !youtubeSource && <button className="upload-another" onClick={chooseFile} disabled={locked}><Plus size={15} /> Upload another video</button>}
                   {youtubeSource && selectedVideo && stream.status !== 'preparing' && <div className="youtube-cached"><CheckCircle2 size={14} /> Video is ready in your library. Future starts use this saved copy.</div>}
                   {youtubeSource && stream.status === 'error' && normalizedYoutubeUrl === data.settings.youtubeUrl && <p className="source-error" role="alert">{stream.reason}</p>}
@@ -288,7 +333,7 @@ export default function App() {
     </div>
     <input ref={fileInput} className="visually-hidden" type="file" accept=".mp4,.mov,.mkv,.webm,.avi" aria-label="Upload video file" onChange={e => uploadVideo(e.target.files?.[0])} />
     {dialog === 'choose' && data && <Dialog title="Choose your video" subtitle="Select a video from your server library." wide onClose={() => setDialog(null)}><div className="dialog-body">{libraryContent(true)}<button className="button secondary modal-upload" onClick={chooseFile} disabled={Boolean(upload) || !stream.encoderAvailable}><Plus size={16} /> Upload a new video</button></div></Dialog>}
-    {dialog === 'guide' && <Dialog title="A little setup. Then, you’re live." subtitle="Your video → your server → YouTube. That’s it." onClose={() => setDialog(null)}><div className="dialog-body guide-body"><div className="guide-step"><span>1</span><div><h3>Get your YouTube stream key</h3><p>Open <a href="https://studio.youtube.com" target="_blank" rel="noreferrer">YouTube Studio <ExternalLink size={12} /></a> → Create → Go live → Stream. Set the title and visibility there, then copy your stream key. First-time live access can take up to 24 hours.</p></div></div><div className="guide-step"><span>2</span><div><h3>Upload a video or paste a YouTube link</h3><p>Choose Upload video to use a file, or YouTube link to use a public recorded video. Links use Direct stream by default: video and audio go straight to the encoder without saving the entire file. Choose Download first if you want a saved library copy instead.</p></div></div><div className="guide-step"><span>3</span><div><h3>Choose your settings & start</h3><p>Paste the key, choose quality, and enable loop for continuous playback. Optionally set an end time. Click Start streaming, then check the preview in YouTube Studio and click Go live if auto-start is off.</p></div></div><div className="guide-step"><span>4</span><div><h3>Close the tab. Keep the server on.</h3><p>YouTube and this app can both be closed. FFmpeg on your server keeps sending video. A VPS keeps this working when your computer is off.</p></div></div><div className="guide-callout"><Server size={22} /><div><strong>{localHost ? 'You are currently running locally.' : 'Your server needs to stay running.'}</strong><p>{localHost ? 'For online hosting, follow the Docker + VPS steps in the project README. No app account or signup required.' : 'Automatic retries recover temporary connection failures. A server restart resumes from the beginning; an interruption may require reopening the broadcast in YouTube.'}</p></div></div><button className="button primary guide-done" onClick={() => setDialog(null)}>Got it, let’s stream <ArrowRight size={16} /></button></div></Dialog>}
+    {dialog === 'guide' && <Dialog title="A little setup. Then, you’re live." subtitle="Your video → your server → YouTube. That’s it." onClose={() => setDialog(null)}><div className="dialog-body guide-body"><div className="guide-step"><span>1</span><div><h3>Get your YouTube stream key</h3><p>Open <a href="https://studio.youtube.com" target="_blank" rel="noreferrer">YouTube Studio <ExternalLink size={12} /></a> → Create → Go live → Stream. Set the title and visibility there, then copy your stream key. First-time live access can take up to 24 hours.</p></div></div><div className="guide-step"><span>2</span><div><h3>Upload a video or paste a YouTube link</h3><p>Choose Upload video to use a file, or YouTube link to use a public recorded video. Links use Direct stream by default: video and audio go straight to the encoder without saving the entire file. Choose Download first if you want a saved library copy instead.</p></div></div><div className="guide-step"><span>3</span><div><h3>Choose your settings & start</h3><p>Paste the key, choose output format and quality, and enable loop for continuous playback. Vertical 9:16 is the default; centre crop fills the frame, while Fit full video keeps the whole picture. Optionally set an end time. Click Start streaming, then check the preview in YouTube Studio and click Go live if auto-start is off.</p></div></div><div className="guide-step"><span>4</span><div><h3>Close the tab. Keep the server on.</h3><p>YouTube and this app can both be closed. FFmpeg on your server keeps sending video. A VPS keeps this working when your computer is off.</p></div></div><div className="guide-callout"><Server size={22} /><div><strong>{localHost ? 'You are currently running locally.' : 'Your server needs to stay running.'}</strong><p>{localHost ? 'For online hosting, follow the Docker + VPS steps in the project README. No app account or signup required.' : 'Automatic retries recover temporary connection failures. A server restart resumes from the beginning; an interruption may require reopening the broadcast in YouTube.'}</p></div></div><button className="button primary guide-done" onClick={() => setDialog(null)}>Got it, let’s stream <ArrowRight size={16} /></button></div></Dialog>}
     {toast && <div className={`toast ${toast.error ? 'toast-error' : ''}`} role={toast.error ? 'alert' : 'status'}>{toast.error ? <CircleHelp size={19} /> : <CheckCircle2 size={19} />}<span>{toast.message}</span><button className="icon-button" aria-label="Dismiss notification" onClick={() => setToast(null)}><X size={16} /></button></div>}
   </div>;
 }

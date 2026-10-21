@@ -1,15 +1,24 @@
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { ffmpeg } from './media.mjs';
+import { outputFrame } from '../shared/output.mjs';
+import { prepareBranding } from './branding.mjs';
+import { videoFraming } from '../shared/framing.mjs';
+export { QUALITY } from '../shared/output.mjs';
 
 export const YOUTUBE_INGEST = 'rtmps://a.rtmps.youtube.com:443/live2/';
-export const QUALITY = {
-  '720p': { width: 1280, height: 720, bitrate: 4000 },
-  '1080p': { width: 1920, height: 1080, bitrate: 6000 },
-};
-
-export function buildEncoderArgs({ settings, video, input, output, threads = 2 }) {
-  const { width, height, bitrate } = QUALITY[settings.quality];
+export function buildEncoderArgs({ settings, video, input, output, branding = null, threads = 2 }) {
+  const { width, height, bitrate, frameFit } = outputFrame(settings);
+  const contentHeight = branding?.contentHeight ?? height;
+  const { videoZoom, videoPositionX, videoPositionY, sourceTrimTop, sourceTrimBottom } = videoFraming(settings);
+  const x = videoPositionX / 100, y = videoPositionY / 100;
+  const framing = frameFit === 'cover'
+    ? `scale=${width}:${contentHeight}:force_original_aspect_ratio=increase,crop=${width}:${contentHeight}:(iw-ow)*${x}:(ih-oh)*${y}`
+    : `scale=${width}:${contentHeight}:force_original_aspect_ratio=decrease,pad=${width}:${contentHeight}:(ow-iw)*${x}:(oh-ih)*${y}:color=black`;
+  // Crop before enlarging the result: zoom never creates a huge intermediate frame.
+  const zoom = videoZoom === 1 ? '' : `,crop=iw/${videoZoom}:ih/${videoZoom}:(iw-ow)*${x}:(ih-oh)*${y}:exact=1,scale=${width}:${contentHeight}`;
+  const sourceCrop = sourceTrimTop || sourceTrimBottom
+    ? `crop=iw:trunc(ih*${1 - (sourceTrimTop + sourceTrimBottom) / 100}/2)*2:0:trunc(ih*${sourceTrimTop / 100}/2)*2,` : '';
   const args = ['-hide_banner', '-loglevel', 'warning', '-nostats', '-progress', 'pipe:1'];
   if (video.remote) {
     for (const source of video.inputs) {
@@ -25,9 +34,15 @@ export function buildEncoderArgs({ settings, video, input, output, threads = 2 }
   }
   if (!video.hasAudio) args.push('-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo');
   const audioInput = video.hasAudio ? (video.remote ? video.audioInput : 0) : (video.remote ? video.inputs.length : 1);
-  args.push(
-    '-map', '0:v:0', '-map', `${audioInput}:a:0`,
-    '-vf', `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p`,
+  const normalize = `scale=trunc(iw*sar/2)*2:ih,setsar=1,${sourceCrop}${framing}${zoom},setsar=1`;
+  if (branding) {
+    const imageInput = (video.remote ? video.inputs.length : 1) + (video.hasAudio ? 0 : 1);
+    args.push('-loop', '1', '-framerate', '30', '-protocol_whitelist', 'file,pipe', '-i', branding.image,
+      '-filter_complex_threads', '2', '-filter_complex',
+      `[0:v:0]${normalize},pad=${width}:${height}:0:${branding.top}:color=black[base];[${imageInput}:v:0]scale=${width}:${height}[banner];[base][banner]overlay=0:0:shortest=1,${branding.filters.join(',')},fps=30,format=yuv420p[outv]`,
+      '-map', '[outv]');
+  } else args.push('-map', '0:v:0', '-vf', `${normalize},fps=30,format=yuv420p`);
+  args.push('-map', `${audioInput}:a:0`,
     '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'high',
     '-threads', String(threads), '-b:v', `${bitrate}k`, '-minrate', `${bitrate}k`, '-maxrate', `${bitrate}k`,
     '-bufsize', `${bitrate * 2}k`, '-g', '60', '-keyint_min', '60', '-sc_threshold', '0',
@@ -80,6 +95,7 @@ export class StreamController {
       desiredRunning: this.store.state.desiredRunning,
       preparation: this.preparationProgress,
       source: this.remoteSource ? { direct: true, title: this.remoteSource.title, duration: this.remoteSource.duration } : null,
+      output: outputFrame(this.store.state.settings),
     };
   }
 
@@ -113,6 +129,7 @@ export class StreamController {
       if (!settings.youtubeUrl) throw Object.assign(new Error('Paste a YouTube video link first.'), { status: 400 });
     } else if (!videos.some(v => v.id === settings.videoId)) throw Object.assign(new Error('Choose an uploaded video first.'), { status: 400 });
     if (!this.store.getKey()) throw Object.assign(new Error('Add your YouTube stream key first.'), { status: 400 });
+    prepareBranding(settings, this.store.directory);
     this.store.state.desiredRunning = true;
     this.remoteSource = null;
     this.startedAt = settings.source === 'youtube' ? null : new Date().toISOString();
@@ -178,9 +195,10 @@ export class StreamController {
     const { settings, videos } = this.store.state;
     const video = this.remoteSource || videos.find(v => v.id === settings.videoId);
     const key = this.store.getKey();
-    const args = buildEncoderArgs({ settings, video, input: video.remote ? undefined : join(this.store.uploads, video.file), output: YOUTUBE_INGEST + key });
     let child;
     try {
+      const branding = prepareBranding(settings, this.store.directory);
+      const args = buildEncoderArgs({ settings, video, branding, input: video.remote ? undefined : join(this.store.uploads, video.file), output: YOUTUBE_INGEST + key });
       child = this.spawn(ffmpeg, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     } catch (error) {
       this.handleExit(1, redact(error.message, key));

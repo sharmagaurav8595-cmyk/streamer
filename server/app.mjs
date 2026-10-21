@@ -6,9 +6,12 @@ import { basename, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Store } from './store.mjs';
 import { StreamController, QUALITY } from './encoder.mjs';
-import { inspectVideo, makeThumbnail, checkEncoder } from './media.mjs';
+import { inspectVideo, makeThumbnail, checkEncoder, captureRemotePreview } from './media.mjs';
 import { YoutubeImporter, checkYoutubeDownloader, cleanupYoutubeWork } from './youtube.mjs';
 import { normalizeYouTubeUrl } from '../shared/youtube.mjs';
+import { brandingDefaults } from '../shared/branding.mjs';
+import { framingDefaults } from '../shared/framing.mjs';
+import { fontForText } from './fonts.mjs';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
 const MB = 1024 ** 2, GB = 1024 ** 3;
@@ -22,6 +25,28 @@ export function validateSettings(body, current, videos) {
   next.source = body.source ?? next.source ?? 'upload';
   if ('youtubeMode' in body && !['direct', 'download'].includes(body.youtubeMode)) throw fail('Choose direct streaming or download first.');
   next.youtubeMode = body.youtubeMode ?? next.youtubeMode ?? 'direct';
+  if ('layout' in body && !['vertical', 'horizontal'].includes(body.layout)) throw fail('Choose vertical 9:16 or horizontal 16:9 output.');
+  if ('frameFit' in body && !['cover', 'contain'].includes(body.frameFit)) throw fail('Choose fill frame or fit full video.');
+  next.layout = body.layout ?? next.layout ?? 'vertical';
+  next.frameFit = body.frameFit ?? next.frameFit ?? 'cover';
+  for (const [field, label, min, max] of [['videoZoom', 'Video zoom', 1, 3], ['videoPositionX', 'Horizontal position', 0, 100], ['videoPositionY', 'Vertical position', 0, 100], ['sourceTrimTop', 'Source top crop', 0, 45], ['sourceTrimBottom', 'Source bottom crop', 0, 45]]) {
+    if (field in body) {
+      if (typeof body[field] !== 'number' || !Number.isFinite(body[field]) || body[field] < min || body[field] > max) throw fail(`${label} must be a number between ${min} and ${max}.`);
+      next[field] = body[field];
+    }
+    next[field] ??= framingDefaults[field];
+  }
+  if (next.sourceTrimTop + next.sourceTrimBottom > 80) throw fail('Keep at least 20% of the original video visible.');
+  if ('overlayEnabled' in body && typeof body.overlayEnabled !== 'boolean') throw fail('Stream overlay must be on or off.');
+  next.overlayEnabled = body.overlayEnabled ?? next.overlayEnabled ?? false;
+  for (const [field, label, limit] of [['overlayName', 'Channel name', 32], ['followText', 'Follow text', 28], ['subscribeText', 'Subscribe text', 28]]) {
+    if (field in body) {
+      if (typeof body[field] !== 'string' || !body[field].trim() || Array.from(body[field].trim()).length > limit || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(body[field])) throw fail(`${label} must be 1–${limit} characters on one line.`);
+      next[field] = body[field].trim();
+    }
+    next[field] ??= brandingDefaults[field];
+  }
+  if (next.overlayEnabled) for (const field of ['overlayName', 'followText', 'subscribeText']) fontForText(next[field]);
   if ('youtubeUrl' in body) {
     if (typeof body.youtubeUrl !== 'string') throw fail('Enter a YouTube video link.');
     next.youtubeUrl = body.youtubeUrl.trim();
@@ -127,6 +152,7 @@ export async function createApplication(options = {}) {
     videos: store.state.videos.map(publicVideo),
     stream: controller.snapshot(), events: store.state.events,
     youtube: { available: youtubeAvailable },
+    features: { streamOverlay: true, videoFraming: true, sourceCrop: true },
     storage: { used: store.state.videos.reduce((total, v) => total + v.size, 0), limit: maxStorageBytes, maxUpload: maxUploadBytes },
     serverTime: new Date().toISOString(),
   });
@@ -139,6 +165,34 @@ export async function createApplication(options = {}) {
   }
 
   app.get('/api/state', (_req, res) => res.json(state()));
+  let previewInProgress = false, previewCache = null;
+  app.post('/api/youtube/preview', async (req, res, next) => {
+    let sourceUrl;
+    try { sourceUrl = normalizeYouTubeUrl(req.body?.youtubeUrl || ''); } catch (error) { return next(fail(error.message)); }
+    if (!youtubeAvailable) return next(fail('YouTube support is not installed. Run npm run setup:youtube and restart the app.', 503));
+    if (previewCache?.sourceUrl === sourceUrl && Date.now() - previewCache.createdAt < 5 * 60 * 1000) return res.json(previewCache.video);
+    if (previewInProgress) return next(fail('A video frame is already loading. Please wait a moment.', 409));
+    previewInProgress = true;
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), 45000);
+    const disconnect = () => { if (!res.writableEnded) abort.abort(); };
+    res.once('close', disconnect);
+    try {
+      const result = options.previewYoutube ? await options.previewYoutube(sourceUrl, { signal: abort.signal }) : await (async () => {
+        const source = controller.remoteSource?.sourceUrl === sourceUrl ? controller.remoteSource : await youtubeImporter.resolve(sourceUrl, { signal: abort.signal });
+        return { ...await captureRemotePreview(source, { signal: abort.signal }), name: source.title, duration: source.duration };
+      })();
+      if (abort.signal.aborted) throw new Error('Preview cancelled');
+      const video = { id: sourceUrl, name: result.name || 'YouTube source preview', width: result.width, height: result.height, duration: result.duration || 0,
+        thumbnailUrl: result.thumbnailUrl, sourceUrl, previewOnly: true };
+      previewCache = { sourceUrl, video, createdAt: Date.now() };
+      res.json(video);
+    } catch (error) {
+      if (!res.destroyed) next(fail(abort.signal.aborted ? 'The video frame took too long to load. Try again.' : 'Could not load a frame from this video. Try another public video or upload a local file.', 400));
+    } finally {
+      clearTimeout(timer); res.removeListener('close', disconnect); previewInProgress = false;
+    }
+  });
   app.put('/api/settings', (req, res) => { saveSettings(req.body); res.json(state()); });
   app.post('/api/stream/start', (req, res) => {
     if (controller.busy) throw fail('A stream is already running or stopping.', 409);

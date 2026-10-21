@@ -38,6 +38,30 @@ The app reports **Sending to YouTube** when FFmpeg produces output. It cannot re
 
 ## Yeh background mein kaise chalta hai?
 
+### Vertical / Reels-style output
+
+**Output format** defaults to **Vertical 9:16**, for uploaded files, downloaded YouTube sources, and direct YouTube streaming. HD sends **720×1280**; Full HD sends **1080×1920**, both at 30 fps. These are the actual encoder output dimensions. Existing settings that do not yet have a layout also default to vertical.
+
+**Fill frame — centre crop** fills the canvas without stretching; parts of a landscape picture outside the centre portrait frame are cropped. Choose **Fit full video — black bars** to preserve the entire source picture. Uploaded/saved video previews use the selected shape and framing, and the output resolution is shown below the quality control. **Horizontal 16:9** remains available when needed. Stop a running stream before changing its format, then start again.
+
+This produces a vertical live stream; it does not upload a Short or publish to Instagram. Confirm the received portrait preview in YouTube Studio. If YouTube's Dual stream setting is enabled, use the stream key assigned to its vertical encoder feed; the app sends one encoder feed at a time. See [YouTube's vertical live and encoder layout instructions](https://support.google.com/youtube/answer/2474026?hl=en). Shorts-feed distribution is controlled by YouTube.
+
+### Follow & Subscribe banners
+
+Enable **Follow & Subscribe overlay** in Stream setup. Set your **Channel / display name**, **Top banner text**, and **Bottom banner text** before starting the stream. The red/black frame reserves separate top and bottom bands; the source video is cropped/fitted into the middle window using your chosen Video framing setting. Your channel name appears on both banners. The preview updates as you type, including in YouTube direct mode, where the middle is a placeholder until you check the actual feed in YouTube Studio.
+
+The banners and text are burned into the outgoing video by FFmpeg, so they remain visible when the browser is closed. They work with uploaded videos, downloaded YouTube videos, direct YouTube inputs, loops, and reconnects. Settings persist across restarts; stop the stream before changing them. Turn the overlay off for the normal full-frame output. These are visual prompts, not clickable follow/subscribe buttons.
+
+The bundled Noto fonts are distributed under their SIL Open Font License, included in `public/stream-overlays/FONT-LICENSE.txt`. The encoder uses Noto Sans for English and selects the script font only when it actually contains every character in a line. Unsupported text is rejected with an actionable error instead of silently rendering missing-glyph boxes. Browser preview fonts match the bundled encoder fonts. Text is passed through UTF-8 files with FFmpeg expansion disabled, so punctuation and `%` are treated literally. PNG/SVG artwork and fonts are packaged for local and Docker use; no additional setup command is needed. The SVG is the editable background source; `node scripts/render-overlay.mjs` regenerates the committed PNG using the development Playwright browser.
+
+### Crop and position the video
+
+Use **Adjust video** under Video framing to set **Zoom** (1×–3×), **Horizontal focus**, and **Vertical focus**. The preview updates immediately. **Reset framing** restores 1× zoom and centred positioning. The same crop and position are applied by FFmpeg to the outgoing feed; with an overlay, adjustments affect only the middle video window, and the banners stay fixed. Both Fill frame and Fit full video support adjustment. Save settings or click Start streaming to persist your choices; stop a running stream before changing them.
+
+If the original video already contains Follow/Subscribe banners, open **Remove borders in original video** and set **Crop from top** and **Crop from bottom**. These percentages are removed from the source before fitting, zooming and adding this app's banners. Each edge can remove up to 45%, while at least 20% of the source must remain visible. The preview shows the same source crop; Reset framing clears these edge crops too. This avoids stacking a new banner over an old banner embedded in the source.
+
+For a YouTube link, click **Load video frame** first. The backend opens the public source and decodes one JPEG still into memory, without saving a source video or adding anything to the library. The frame is cached for five minutes, so repeated previews do not need another source connection. The still is for framing; it does not play the source or show a live output monitor. Changing the video link clears the preview, and closing the browser discards the browser's still. Confirm the received live output in YouTube Studio after starting.
+
 ### YouTube link se source video
 
 In **Stream setup → Your video**, choose **YouTube link**, paste a public recorded video URL, add your destination stream key, and click **Start streaming**. The default **Direct stream — no file saved** mode resolves YouTube's media address and feeds the video and audio straight into FFmpeg. It does not download the entire video or create a library file before starting. A short connection/buffering delay is normal, and internet data is still used for every playback. Closing the browser does not stop the backend; the computer/server and its internet connection must stay on.

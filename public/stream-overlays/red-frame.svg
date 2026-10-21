@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <defs>
+    <linearGradient id="panel" x2="1" y2="1"><stop stop-color="#060608"/><stop offset=".5" stop-color="#191014"/><stop offset="1" stop-color="#050506"/></linearGradient>
+    <linearGradient id="red"><stop stop-color="#9b0012" stop-opacity=".2"/><stop offset=".5" stop-color="#ff182d"/><stop offset="1" stop-color="#b7001c" stop-opacity=".3"/></linearGradient>
+    <pattern id="slashes" width="190" height="90" patternUnits="userSpaceOnUse" patternTransform="rotate(-22)"><path d="M0 9H125M30 21H180M0 67H70M112 79H190" stroke="#ff1636" stroke-width="4" opacity=".35"/><path d="M14 28H90M70 40H165M10 77H60" stroke="#8a071d" stroke-width="14" opacity=".5"/><path d="M0 5H73M140 48H190" stroke="#d8b9c4" stroke-width="1" opacity=".3"/></pattern>
+    <clipPath id="bands"><path d="M0 0H720V192H0ZM0 1050H720V1280H0Z"/></clipPath>
+    <filter id="grain"><feTurbulence baseFrequency=".11" numOctaves="3" seed="12"/><feColorMatrix type="saturate" values="0"/><feComponentTransfer><feFuncA type="linear" slope=".13"/></feComponentTransfer></filter>
+  </defs>
+  <g clip-path="url(#bands)">
+    <path d="M0 0H720V192H0ZM0 1050H720V1280H0Z" fill="url(#panel)"/>
+    <path d="M0 0H720V192H0ZM0 1050H720V1280H0Z" fill="url(#slashes)"/>
+    <path d="M0 160L195 18H255L0 189ZM565 0H720V30L480 190H425ZM0 1230L255 1050H355L20 1280ZM490 1280L720 1100V1175L590 1280Z" fill="#dc0626" opacity=".45"/>
+    <path d="M0 177L173 68L85 153L195 97L50 191ZM588 11L455 112L596 47L526 116L720 1ZM0 1200L280 1068L154 1165L362 1085L28 1278ZM720 1162L580 1238L720 1198" fill="#ff2542" opacity=".4"/>
+    <path d="M35 1076L670 1063L688 1148L52 1166L24 1130Z" fill="#850619" opacity=".45"/>
+    <path d="M0 188H720V192H0ZM0 1050H720V1054H0ZM45 1217H675V1220H45Z" fill="url(#red)"/>
+    <path d="M70 12H235M485 12H650M40 1266H190M530 1266H680" stroke="#f2243b" stroke-width="2" opacity=".7"/>
+    <rect width="720" height="1280" filter="url(#grain)" opacity=".6"/>
+  </g>
+  <g transform="translate(288 165)" fill="#101014" stroke="#ec2339" stroke-width="2">
+    <circle r="12"/><circle cx="48" r="12"/><circle cx="96" r="12"/><circle cx="144" r="12"/>
+    <path d="M-4-5L5 0L-4 5Z" fill="white" stroke="none"/>
+    <rect x="42" y="-6" width="12" height="12" rx="3" stroke="white" stroke-width="1.6"/><circle cx="48" r="2.5" stroke="white" stroke-width="1.4"/>
+    <path d="M90 1L94 5L102-5" fill="none" stroke="white"/>
+    <path d="M138-5H150V3H144L140 6V3H138Z" stroke="white" stroke-width="1.5"/>
+  </g>
+</svg>
